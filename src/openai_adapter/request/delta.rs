@@ -31,8 +31,10 @@ use super::tools::ToolContext;
 /// 指纹只覆盖 role + content，因此必须拒绝 prompt formatter 还会消费的任何
 /// 额外字段，以及无法按纯文本一一表示的内容。拒绝只会触发完整 prompt 回退。
 fn is_plain_text_message(msg: &Message) -> bool {
-    matches!(msg.role.as_str(), "system" | "developer" | "user" | "assistant")
-        && matches!(msg.content.as_ref(), Some(MessageContent::Text(_)))
+    matches!(
+        msg.role.as_str(),
+        "system" | "developer" | "user" | "assistant"
+    ) && matches!(msg.content.as_ref(), Some(MessageContent::Text(_)))
         && msg.name.is_none()
         && msg.tool_call_id.is_none()
         && msg.tool_calls.is_none()
@@ -240,7 +242,10 @@ mod tests {
                     "function": { "name": "lookup", "arguments": "{}" }
                 }]),
             ),
-            ("function_call", json!({ "name": "lookup", "arguments": "{}" })),
+            (
+                "function_call",
+                json!({ "name": "lookup", "arguments": "{}" }),
+            ),
             ("audio", json!({ "transcript": "audio metadata" })),
             ("refusal", json!("I cannot help with that request.")),
         ];
@@ -269,8 +274,7 @@ mod tests {
         });
 
         let mut multipart = base.clone();
-        multipart["messages"][1]["content"] =
-            json!([{ "type": "text", "text": "上一轮回复" }]);
+        multipart["messages"][1]["content"] = json!([{ "type": "text", "text": "上一轮回复" }]);
         assert!(
             build(&parse(multipart), &no_tool_ctx(), false, false).is_none(),
             "multipart content must force full-prompt fallback"
