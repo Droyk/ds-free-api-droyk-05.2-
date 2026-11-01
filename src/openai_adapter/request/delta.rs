@@ -10,25 +10,41 @@
 //!    严格一致（前缀匹配，见 `Account::cached_session_for`）；
 //! 2. `text`：新增那条用户消息的**原文**（不含任何角色标签）。
 //!
-//! **只在纯对话形态下提供**：一旦涉及工具定义 / 工具消息 / 文件 / 联网搜索 /
-//! `response_format` 注入，prompt 里就必然带有代理特有的脚手架文本，增量发送会破
-//! 坏这些能力，因此这些情况一律返回 `None`（调用方退回「新建会话 + 完整 prompt」，
-//! 也就是改动前的行为）。
+//! **只在纯文本对话形态下提供**：工具定义 / 工具消息 / 文件 / 联网搜索 /
+//! `response_format` 注入一律返回 `None`。每条消息也必须只有受支持的 role +
+//! 纯文本 content；`name`、tool/function 调用字段、audio、refusal 等任何额外
+//! 消息字段，以及多模态/缺失 content 或未知 role，都会退回「新建会话 + 完整 prompt」。
+//! 这样指纹只需覆盖 role + content，就不会把语义不同的历史误判成同一条链。
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use crate::openai_adapter::types::{ChatCompletionsRequest, Message};
+use crate::openai_adapter::types::{ChatCompletionsRequest, Message, MessageContent};
 use ds_core::DeltaPrompt;
 
 use super::prompt::format_content;
 
 use super::tools::ToolContext;
 
+/// 增量路径允许的消息形态。
+///
+/// 指纹只覆盖 role + content，因此必须拒绝 prompt formatter 还会消费的任何
+/// 额外字段，以及无法按纯文本一一表示的内容。拒绝只会触发完整 prompt 回退。
+fn is_plain_text_message(msg: &Message) -> bool {
+    matches!(msg.role.as_str(), "system" | "developer" | "user" | "assistant")
+        && matches!(msg.content.as_ref(), Some(MessageContent::Text(_)))
+        && msg.name.is_none()
+        && msg.tool_call_id.is_none()
+        && msg.tool_calls.is_none()
+        && msg.function_call.is_none()
+        && msg.audio.is_none()
+        && msg.refusal.is_none()
+}
+
 /// 单条消息的指纹
 ///
-/// 只用于「历史是否与上游会话一致」的判断：不要求密码学强度，但必须对
-/// `role` + `content` 的任何变化敏感（不一致只会导致退回新建会话，是安全的一侧）。
+/// 仅在 `is_plain_text_message` 已验证消息形态后调用；此时 prompt formatter 对消息
+/// 的语义表示恰好由 role + 纯文本 content 构成。
 fn message_fingerprint(msg: &Message) -> u64 {
     let mut hasher = DefaultHasher::new();
     msg.role.hash(&mut hasher);
@@ -68,10 +84,15 @@ pub(crate) fn build(
         return None;
     }
 
-    // 2) 消息形态：非空、无 tool 角色、最后一条是纯文本 user
+    // 2) 所有消息都必须是 role + 纯文本 content；额外字段或其他形态全部安全回退。
     let messages = req.messages.as_slice();
+    if messages.is_empty() || messages.iter().any(|msg| !is_plain_text_message(msg)) {
+        return None;
+    }
+
+    // 3) 增量内容只能是最后一条 user 消息。
     let last = messages.last()?;
-    if last.role != "user" || messages.iter().any(|m| m.role == "tool") {
+    if last.role != "user" {
         return None;
     }
     let content = last.content.as_ref()?;
@@ -194,6 +215,91 @@ mod tests {
         assert!(
             build(&rf, &no_tool_ctx(), false, false).is_none(),
             "response_format 注入"
+        );
+    }
+
+    /// 只要任何消息包含 prompt formatter 会消费的额外字段，就必须使用完整 prompt 回退。
+    #[test]
+    fn unsupported_message_metadata_falls_back_to_full_prompt() {
+        let base = json!({
+            "model": "deepseek-default",
+            "messages": [
+                { "role": "user", "content": "第一轮" },
+                { "role": "assistant", "content": "上一轮回复" },
+                { "role": "user", "content": "下一轮问题" }
+            ]
+        });
+        let cases = [
+            ("name", json!("named-message")),
+            ("tool_call_id", json!("call_123")),
+            (
+                "tool_calls",
+                json!([{
+                    "id": "call_123",
+                    "type": "function",
+                    "function": { "name": "lookup", "arguments": "{}" }
+                }]),
+            ),
+            ("function_call", json!({ "name": "lookup", "arguments": "{}" })),
+            ("audio", json!({ "transcript": "audio metadata" })),
+            ("refusal", json!("I cannot help with that request.")),
+        ];
+
+        for (field, value) in cases {
+            let mut body = base.clone();
+            body["messages"][1][field] = value;
+            let req = parse(body);
+            assert!(
+                build(&req, &no_tool_ctx(), false, false).is_none(),
+                "{field} must force full-prompt fallback"
+            );
+        }
+    }
+
+    /// 多模态 parts / 缺失 content 不能被压成纯文本增量。
+    #[test]
+    fn non_text_or_missing_content_falls_back_to_full_prompt() {
+        let base = json!({
+            "model": "deepseek-default",
+            "messages": [
+                { "role": "user", "content": "第一轮" },
+                { "role": "assistant", "content": "上一轮回复" },
+                { "role": "user", "content": "下一轮问题" }
+            ]
+        });
+
+        let mut multipart = base.clone();
+        multipart["messages"][1]["content"] =
+            json!([{ "type": "text", "text": "上一轮回复" }]);
+        assert!(
+            build(&parse(multipart), &no_tool_ctx(), false, false).is_none(),
+            "multipart content must force full-prompt fallback"
+        );
+
+        let mut missing = base;
+        missing["messages"][1]["content"] = serde_json::Value::Null;
+        assert!(
+            build(&parse(missing), &no_tool_ctx(), false, false).is_none(),
+            "missing content must force full-prompt fallback"
+        );
+    }
+
+    /// 未明确支持的消息 role（例如旧式 function）一律退回完整 prompt。
+    #[test]
+    fn unsupported_role_falls_back_to_full_prompt() {
+        let mut body = json!({
+            "model": "deepseek-default",
+            "messages": [
+                { "role": "user", "content": "第一轮" },
+                { "role": "function", "name": "lookup", "content": "结果" },
+                { "role": "user", "content": "下一轮问题" }
+            ]
+        });
+        // 此处 name 本身也会触发回退；单独移除它以验证 role 白名单。
+        body["messages"][1].as_object_mut().unwrap().remove("name");
+        assert!(
+            build(&parse(body), &no_tool_ctx(), false, false).is_none(),
+            "unsupported role must force full-prompt fallback"
         );
     }
 
