@@ -1,0 +1,208 @@
+name: Build Windows x64 from main
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-main-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  frontend:
+    name: Build frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: web/.bun-version
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Type check
+        working-directory: web
+        run: bun run typecheck
+
+      - name: Lint
+        working-directory: web
+        run: bun run lint
+
+      - name: Check translations
+        working-directory: web
+        run: bun run check:locales
+
+      - name: Check configuration consistency
+        working-directory: web
+        run: bun run check:config-parity
+
+      - name: Build frontend
+        working-directory: web
+        run: bun run build
+
+      - name: Verify frontend output
+        run: |
+          test -f web/dist/index.html
+
+      - name: Upload frontend
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  test:
+    name: Test Rust project
+    needs: frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Download frontend
+        uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist/
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libclang-dev
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Rust tests
+        run: cargo test --workspace --all-targets --locked
+
+      - name: Run documentation tests
+        run: cargo test --doc --workspace --locked
+
+  windows:
+    name: Build Windows x64 executable
+    needs: [frontend, test]
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Download frontend
+        uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist/
+
+      - name: Verify embedded dashboard files
+        shell: pwsh
+        run: |
+          if (!(Test-Path "web/dist/index.html")) {
+            throw "Frontend missing. Refusing to build an incomplete executable."
+          }
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Install Windows build dependencies
+        shell: cmd
+        run: |
+          choco install cmake -y
+          choco install strawberryperl -y
+          choco install pkgconfiglite -y
+          choco install llvm -y
+          choco install nasm -y
+
+      - name: Compile Windows application
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+
+      - name: Package and verify ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $packageName = "ds-free-api-main-windows-x86_64"
+          $packageDir = Join-Path $PWD $packageName
+          $exe = "target\x86_64-pc-windows-msvc\release\ds-free-api.exe"
+          $zip = "$packageName.zip"
+
+          if (!(Test-Path $exe)) {
+            throw "Compiled executable not found: $exe"
+          }
+
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          Copy-Item $exe -Destination $packageDir
+
+          $required = @(
+            "config.example.toml",
+            "LICENSE",
+            "README.md",
+            "README.en.md"
+          )
+
+          foreach ($file in $required) {
+            if (!(Test-Path $file)) {
+              throw "Required file missing: $file"
+            }
+            Copy-Item $file -Destination $packageDir
+          }
+
+          Compress-Archive -Path "$packageDir\*" -DestinationPath $zip -Force
+
+          $checkDir = Join-Path $env:RUNNER_TEMP "zip-verification"
+          Expand-Archive -LiteralPath $zip -DestinationPath $checkDir -Force
+
+          $actual = @(
+            Get-ChildItem $checkDir -File |
+              Select-Object -ExpandProperty Name |
+              Sort-Object
+          )
+
+          $expected = @(
+            "config.example.toml",
+            "ds-free-api.exe",
+            "LICENSE",
+            "README.en.md",
+            "README.md"
+          ) | Sort-Object
+
+          $difference = Compare-Object $expected $actual
+          if ($difference) {
+            throw "ZIP contents do not match the expected five files."
+          }
+
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
+          "$hash  $zip" | Set-Content "$zip.sha256"
+
+          Write-Host "Package verified successfully."
+          Write-Host "SHA256: $hash"
+
+      - name: Upload finished Windows application
+        uses: actions/upload-artifact@v7
+        with:
+          name: ds-free-api-main-windows-x86_64
+          path: |
+            ds-free-api-main-windows-x86_64.zip
+            ds-free-api-main-windows-x86_64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
