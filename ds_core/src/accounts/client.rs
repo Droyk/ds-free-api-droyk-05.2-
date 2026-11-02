@@ -327,17 +327,14 @@ const DEFAULT_HIF_DLIQ_URL: &str = "https://hif-dliq.deepseek.com/query";
 /// 「地址栏导航」头（`sec-fetch-dest: document`、`accept: text/html,…`）是
 /// 任何真实客户端都不会有的组合（2026-10-07 本地 echo server 取证）。
 ///
-/// **默认档位是浏览器**（`chrome136`）：官方 Web 客户端就是一套 Chrome 身份，
-/// 而「对齐真实客户端」是降低风控暴露面的唯一可操作原则 —— 我们并不知道上游
-/// 具体依据哪些信号判定违规，因此每一项都向真实客户端靠拢（见 `docs/development.md`）。
+/// Transport identity for the staged v0.5.1 A/B comparison.
+/// OkHttp is the temporary default; Chrome remains available as an explicit profile.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EmulationProfile {
-    /// 原生安卓 App（OkHttp）：默认头只有 `accept: */*` / `accept-language` / UA，
-    /// 与 `user_agent = "DeepSeek/… Android/…"` + `client_platform = android` 自洽
-    OkHttp4_12,
-    /// 桌面 Chrome（默认）：带 `sec-ch-ua*` / `sec-fetch-*` / 文档 accept，
-    /// 需要同时把 UA / `client_platform` / `client_os` 切成 web 才自洽
+    /// Native Android / OkHttp profile used by v0.5.1.
     #[default]
+    OkHttp4_12,
+    /// Desktop Chrome profile.
     Chrome136,
 }
 
@@ -1117,8 +1114,8 @@ mod tests {
         assert_eq!(EmulationProfile::from_config("nope"), None);
         assert_eq!(
             EmulationProfile::default(),
-            EmulationProfile::Chrome136,
-            "默认档位对齐浏览器（chrome136）"
+            EmulationProfile::OkHttp4_12,
+            "Stage-1 A/B default matches the v0.5.1 OkHttp profile"
         );
     }
 

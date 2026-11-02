@@ -314,11 +314,10 @@ fn default_wasm_url() -> String {
     "https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm".to_string()
 }
 
-/// 默认 UA：桌面 Chrome（与默认 `client_platform = web` / `emulation = chrome136` 自洽）
-///
-/// 依据 2026-10-07 的真实浏览器抓包：官方 Web 客户端就是一套 Chrome 身份。
+/// Stage-1 A/B baseline: restore the v0.5.1 Android identity.
+/// The newer explicit XHR header overrides remain enabled for this isolated test.
 fn default_user_agent() -> String {
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36".to_string()
+    "DeepSeek/2.5.0 Android/35".to_string()
 }
 
 fn default_client_version() -> String {
@@ -326,8 +325,7 @@ fn default_client_version() -> String {
 }
 
 fn default_client_platform() -> String {
-    // 官方 Web 客户端发 `web`（抓包：x-client-platform: web）
-    "web".to_string()
+    "android".to_string()
 }
 
 fn default_client_locale() -> String {
@@ -343,8 +341,7 @@ fn default_client_timezone_offset() -> String {
 }
 
 fn default_client_os() -> String {
-    // 登录 payload 的 os 字段；官方 Web 客户端为 `web`
-    "web".to_string()
+    "android".to_string()
 }
 
 const fn default_hif_enabled() -> bool {
@@ -375,8 +372,8 @@ const fn default_session_idle_secs() -> u64 {
 }
 
 fn default_emulation() -> String {
-    // 默认对齐浏览器：TLS/HTTP2 指纹 + 默认头都用 chrome136
-    "chrome136".to_string()
+    // Stage-1 A/B baseline: restore the v0.5.1 OkHttp transport profile.
+    "okhttp4_12".to_string()
 }
 
 /// HTTP 服务器配置（必填）
