@@ -348,7 +348,6 @@ impl Chat {
                 thinking_enabled: false,
                 search_enabled: false,
                 action: None,
-                source: crate::accounts::COMPLETION_SOURCE_INPUT,
                 preempt: false,
             };
 
@@ -421,7 +420,6 @@ impl Chat {
             thinking_enabled: req.thinking_enabled,
             search_enabled: req.search_enabled,
             action: None,
-            source: crate::accounts::COMPLETION_SOURCE_INPUT,
             preempt: false,
         };
 
@@ -725,7 +723,6 @@ impl Chat {
             thinking_enabled: req.thinking_enabled,
             search_enabled: req.search_enabled,
             action: None,
-            source: crate::accounts::COMPLETION_SOURCE_INPUT,
             preempt: false,
         };
 
